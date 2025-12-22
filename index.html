@@ -4,9 +4,163 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pares POS</title>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <header class="topbar">
+      <div class="brand">
+        <h1>Pares POS</h1>
+        <p>Offline single device</p>
+      </div>
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="cashier" type="button">Cashier</button>
+        <button class="tab-btn" data-tab="history" type="button">History</button>
+        <button class="tab-btn" data-tab="menu" type="button">Menu</button>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section id="page-cashier" class="page active">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Menu</p>
+                <h2>Tap Items</h2>
+              </div>
+            </div>
+            <div id="category-tabs" class="chips"></div>
+            <div id="menu-items" class="menu-grid"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Current Order</p>
+                <h2>Cart</h2>
+              </div>
+              <button id="clear-cart" class="btn btn-danger" type="button">Clear Cart</button>
+            </div>
+
+            <div id="cart-lines" class="stack"></div>
+
+            <label class="field">
+              <span>Order Notes (optional)</span>
+              <textarea id="order-notes" rows="2" placeholder="Add notes"></textarea>
+            </label>
+
+            <div class="totals">
+              <div class="row">
+                <span>Subtotal</span>
+                <strong id="subtotal-value">₱0.00</strong>
+              </div>
+              <div class="row">
+                <span>Total Due</span>
+                <strong id="total-due-value">₱0.00</strong>
+              </div>
+            </div>
+
+            <div class="payment">
+              <label class="field">
+                <span>Cash Received</span>
+                <input id="cash-received" type="number" inputmode="decimal" min="0" step="0.01" />
+              </label>
+              <div class="row">
+                <span>Change</span>
+                <strong id="change-value">₱0.00</strong>
+              </div>
+              <button id="complete-sale" class="btn btn-primary" type="button">
+                Complete Sale
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-history" class="page">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Today Summary</p>
+                <h2>Sales</h2>
+              </div>
+              <button id="export-csv" class="btn btn-outline" type="button">Export Today CSV</button>
+            </div>
+
+            <div class="summary">
+              <div class="row">
+                <span>Sales Count</span>
+                <strong id="today-count">0</strong>
+              </div>
+              <div class="row">
+                <span>Gross Total</span>
+                <strong id="today-gross">₱0.00</strong>
+              </div>
+            </div>
+
+            <div id="sales-list" class="stack"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Sale Details</p>
+                <h2>Selected Sale</h2>
+              </div>
+              <div id="sale-actions" class="actions"></div>
+            </div>
+
+            <div id="sale-details" class="stack"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-menu" class="page">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Menu Editor</p>
+              <h2>Categories</h2>
+            </div>
+            <button id="reset-menu" class="btn btn-danger" type="button">Reset to Default</button>
+          </div>
+
+          <div id="category-list" class="chips"></div>
+
+          <div class="inline-form">
+            <input id="new-category-name" type="text" placeholder="New category" />
+            <button id="add-category" class="btn btn-primary" type="button">Add Category</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Menu Editor</p>
+              <h2>Items</h2>
+            </div>
+          </div>
+
+          <div class="item-form">
+            <input id="item-name" type="text" placeholder="Item name" />
+            <input id="item-price" type="number" min="0" step="0.01" placeholder="Price" />
+            <select id="item-category"></select>
+            <label class="checkbox">
+              <input id="item-active" type="checkbox" checked />
+              Active
+            </label>
+            <div class="inline-form">
+              <button id="save-item" class="btn btn-primary" type="button">Add</button>
+              <button id="cancel-item" class="btn btn-outline" type="button">Cancel</button>
+            </div>
+          </div>
+
+          <div id="items-list" class="stack"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
   </body>
 </html>
