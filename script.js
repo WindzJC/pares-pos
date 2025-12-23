@@ -1,12 +1,16 @@
 const MENU_KEY = "pos_menu";
 const SALES_KEY = "pos_sales";
+const OPEN_ORDERS_KEY = "pos_open_orders";
 
 const state = {
   menu: null,
   sales: [],
+  openOrders: [],
   selectedCategoryId: "",
   cartLines: [],
   cashReceivedInput: "",
+  customerNumber: "",
+  paymentMethod: "cash",
   notes: "",
   selectedSaleId: null,
   editingSale: null,
@@ -14,6 +18,8 @@ const state = {
     id: null,
     name: "",
     price: "",
+    stock: "",
+    foodpandaPrice: "",
     categoryId: "",
     active: true
   }
@@ -38,6 +44,182 @@ const pesoFormatter = new Intl.NumberFormat("en-PH", {
 });
 
 const formatPeso = (amount) => pesoFormatter.format(amount);
+
+const isAutoPaid = (method) => method !== "cash";
+
+const getItemPrice = (item) => {
+  if (
+    state.paymentMethod === "foodpanda" &&
+    typeof item.foodpandaPrice === "number"
+  ) {
+    return item.foodpandaPrice;
+  }
+  return item.price;
+};
+
+const tallyLines = (lines) => {
+  const tally = new Map();
+  lines.forEach((line) => {
+    tally.set(line.itemId, (tally.get(line.itemId) || 0) + line.qty);
+  });
+  return tally;
+};
+
+const applyStockAdjustments = (adjustments) => {
+  let changed = false;
+  adjustments.forEach((delta, itemId) => {
+    const item = state.menu.items.find((entry) => entry.id === itemId);
+    if (!item || typeof item.stock !== "number") {
+      return;
+    }
+    item.stock = Math.max(0, item.stock + delta);
+    changed = true;
+  });
+  if (changed) {
+    saveMenu(state.menu);
+    renderMenuItems();
+    renderMenuEditor();
+  }
+};
+
+const normalizeHeader = (value) => String(value || "").trim().toLowerCase();
+
+const parseOptionalNumber = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+};
+
+const findOrCreateCategory = (name) => {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const existing = state.menu.categories.find(
+    (category) => category.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (existing) {
+    return existing.id;
+  }
+  const category = { id: crypto.randomUUID(), name: trimmed };
+  state.menu.categories.push(category);
+  return category.id;
+};
+
+const findItemByName = (name, categoryId) => {
+  const lowered = name.toLowerCase();
+  const inCategory = state.menu.items.find(
+    (item) =>
+      item.name.toLowerCase() === lowered &&
+      (!categoryId || item.categoryId === categoryId)
+  );
+  if (inCategory) {
+    return inCategory;
+  }
+  return state.menu.items.find((item) => item.name.toLowerCase() === lowered) || null;
+};
+
+const importInventoryXlsx = (file) => {
+  if (!window.XLSX) {
+    window.alert("XLSX library not loaded. Check your internet connection.");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const data = new Uint8Array(event.target.result);
+    const workbook = window.XLSX.read(data, { type: "array" });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
+    if (!rows.length) {
+      window.alert("No data found in the XLSX file.");
+      return;
+    }
+
+    const headers = rows[0].map(normalizeHeader);
+    const columnIndex = (label) => headers.indexOf(label);
+    const pickIndex = (labels) => {
+      for (const label of labels) {
+        const idx = columnIndex(label);
+        if (idx !== -1) {
+          return idx;
+        }
+      }
+      return -1;
+    };
+
+    const itemIdx = pickIndex(["item", "item name", "product", "menu item"]);
+    const categoryIdx = pickIndex(["category", "group"]);
+    const priceIdx = pickIndex(["price", "dine in price", "menu price"]);
+    const stockIdx = pickIndex(["stock", "inventory", "qty", "quantity"]);
+    const foodpandaIdx = pickIndex([
+      "foodpanda price",
+      "food panda price",
+      "fp price",
+      "foodpanda"
+    ]);
+
+    if (itemIdx === -1) {
+      window.alert("Item column not found. Make sure there is an Item header.");
+      return;
+    }
+
+    let imported = 0;
+    rows.slice(1).forEach((row) => {
+      const name = String(row[itemIdx] || "").trim();
+      if (!name) {
+        return;
+      }
+      const categoryName = categoryIdx !== -1 ? String(row[categoryIdx] || "").trim() : "";
+      const categoryId = categoryName ? findOrCreateCategory(categoryName) : "";
+      const existing = findItemByName(name, categoryId);
+
+      const priceValue = priceIdx !== -1 ? parseOptionalNumber(row[priceIdx]) : null;
+      const stockValue = stockIdx !== -1 ? parseOptionalNumber(row[stockIdx]) : null;
+      const foodpandaValue = foodpandaIdx !== -1 ? parseOptionalNumber(row[foodpandaIdx]) : null;
+
+      if (existing) {
+        if (categoryId) {
+          existing.categoryId = categoryId;
+        }
+        if (typeof priceValue === "number") {
+          existing.price = priceValue;
+        }
+        if (typeof stockValue === "number") {
+          existing.stock = stockValue;
+        }
+        if (typeof foodpandaValue === "number") {
+          existing.foodpandaPrice = foodpandaValue;
+        }
+      } else {
+        state.menu.items.push({
+          id: crypto.randomUUID(),
+          name,
+          price: typeof priceValue === "number" ? priceValue : 0,
+          stock: typeof stockValue === "number" ? stockValue : null,
+          foodpandaPrice: typeof foodpandaValue === "number" ? foodpandaValue : null,
+          categoryId: categoryId || state.menu.categories[0]?.id || "",
+          active: true
+        });
+      }
+      imported += 1;
+    });
+
+    if (imported === 0) {
+      window.alert("No rows were imported. Check your file format.");
+      return;
+    }
+    saveMenu(state.menu);
+    renderAll();
+    window.alert(`Imported ${imported} rows from ${sheetName}.`);
+  };
+  reader.readAsArrayBuffer(file);
+};
 
 const clearNode = (node) => {
   while (node.firstChild) {
@@ -80,6 +262,8 @@ const buildDefaultMenu = () => {
       categoryId,
       name,
       price,
+      stock: null,
+      foodpandaPrice: null,
       active: true
     });
   };
@@ -160,6 +344,11 @@ const loadMenu = () => {
     writeJSON(MENU_KEY, seed);
     return seed;
   }
+  menu.items = menu.items.map((item) => ({
+    ...item,
+    stock: typeof item.stock === "number" ? item.stock : null,
+    foodpandaPrice: typeof item.foodpandaPrice === "number" ? item.foodpandaPrice : null
+  }));
   return menu;
 };
 
@@ -198,6 +387,12 @@ const deleteSale = (saleId) => {
   const nextSales = sales.filter((sale) => sale.id !== saleId);
   saveSales(nextSales);
   state.sales = nextSales;
+};
+
+const loadOpenOrders = () => readJSON(OPEN_ORDERS_KEY, []);
+
+const saveOpenOrders = (orders) => {
+  writeJSON(OPEN_ORDERS_KEY, orders);
 };
 
 const getTodaySales = () => {
@@ -267,23 +462,41 @@ const renderMenuItems = () => {
     const button = el("button", "item-card");
     button.type = "button";
     const name = el("span", "", item.name);
-    const price = el("small", "", formatPeso(item.price));
+    const price = el("small", "", formatPeso(getItemPrice(item)));
     button.appendChild(name);
     button.appendChild(price);
+
+    if (typeof item.stock === "number") {
+      const stockText = item.stock <= 0 ? "Sold out" : `Stock: ${item.stock}`;
+      button.appendChild(el("small", "", stockText));
+      if (item.stock <= 0) {
+        button.disabled = true;
+        button.classList.add("disabled");
+      }
+    }
+
     button.addEventListener("click", () => addItemToCart(item));
     container.appendChild(button);
   });
 };
 
 const addItemToCart = (item) => {
+  if (typeof item.stock === "number") {
+    const currentQty = state.cartLines.find((line) => line.itemId === item.id)?.qty ?? 0;
+    if (currentQty + 1 > item.stock) {
+      window.alert(`Not enough stock for ${item.name}.`);
+      return;
+    }
+  }
   const existing = state.cartLines.find((line) => line.itemId === item.id);
   if (existing) {
     existing.qty += 1;
   } else {
+    const price = getItemPrice(item);
     state.cartLines.push({
       itemId: item.id,
       name: item.name,
-      price: item.price,
+      price,
       qty: 1
     });
   }
@@ -291,6 +504,17 @@ const addItemToCart = (item) => {
 };
 
 const updateCartQty = (itemId, delta) => {
+  if (delta > 0) {
+    const item = state.menu.items.find((entry) => entry.id === itemId);
+    const line = state.cartLines.find((entry) => entry.itemId === itemId);
+    if (item && typeof item.stock === "number") {
+      const currentQty = line?.qty ?? 0;
+      if (currentQty + delta > item.stock) {
+        window.alert(`Not enough stock for ${item.name}.`);
+        return;
+      }
+    }
+  }
   state.cartLines = state.cartLines
     .map((line) => (line.itemId === itemId ? { ...line, qty: line.qty + delta } : line))
     .filter((line) => line.qty > 0);
@@ -310,8 +534,10 @@ const clearCart = () => {
     state.cartLines = [];
     state.cashReceivedInput = "";
     state.notes = "";
+    state.customerNumber = "";
     elements.orderNotes.value = "";
     elements.cashReceived.value = "";
+    elements.customerNumber.value = "";
     renderCart();
   }
 };
@@ -322,14 +548,36 @@ const completeSale = () => {
   }
   const subtotal = calcSubtotal(state.cartLines);
   const totalDue = subtotal;
-  const cashReceived = Number(state.cashReceivedInput || 0);
-  if (cashReceived < totalDue) {
+  const cashReceived = isAutoPaid(state.paymentMethod)
+    ? totalDue
+    : Number(state.cashReceivedInput || 0);
+  if (!isAutoPaid(state.paymentMethod) && cashReceived < totalDue) {
+    return;
+  }
+
+  const stockIssues = state.cartLines
+    .map((line) => {
+      const item = state.menu.items.find((entry) => entry.id === line.itemId);
+      if (!item || typeof item.stock !== "number") {
+        return null;
+      }
+      if (line.qty > item.stock) {
+        return `${item.name} (stock ${item.stock}, need ${line.qty})`;
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (stockIssues.length > 0) {
+    window.alert(`Not enough stock for: ${stockIssues.join(", ")}.`);
     return;
   }
 
   const sale = {
     id: crypto.randomUUID(),
     paidAt: new Date().toISOString(),
+    customerNumber: state.customerNumber.trim(),
+    paymentMethod: state.paymentMethod,
     lines: state.cartLines.map((line) => ({ ...line })),
     subtotal,
     totalDue,
@@ -338,14 +586,140 @@ const completeSale = () => {
   };
 
   addSale(sale);
+  const adjustments = new Map();
+  state.cartLines.forEach((line) => {
+    adjustments.set(line.itemId, (adjustments.get(line.itemId) || 0) - line.qty);
+  });
+  applyStockAdjustments(adjustments);
 
   state.cartLines = [];
   state.cashReceivedInput = "";
   state.notes = "";
+  state.customerNumber = "";
   elements.orderNotes.value = "";
   elements.cashReceived.value = "";
+  elements.customerNumber.value = "";
   renderCart();
   renderHistory();
+};
+
+const updatePaymentMethodUI = () => {
+  document.querySelectorAll(".toggle-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.method === state.paymentMethod);
+  });
+};
+
+const updateCartPricesForMethod = () => {
+  state.cartLines = state.cartLines.map((line) => {
+    const item = state.menu.items.find((entry) => entry.id === line.itemId);
+    if (!item) {
+      return line;
+    }
+    return { ...line, price: getItemPrice(item) };
+  });
+};
+
+const holdOrder = () => {
+  if (state.cartLines.length === 0) {
+    return;
+  }
+  const order = {
+    id: crypto.randomUUID(),
+    customerNumber: state.customerNumber.trim(),
+    notes: state.notes,
+    lines: state.cartLines.map((line) => ({ ...line })),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const orders = loadOpenOrders();
+  orders.push(order);
+  saveOpenOrders(orders);
+  state.openOrders = orders;
+
+  state.cartLines = [];
+  state.cashReceivedInput = "";
+  state.notes = "";
+  state.customerNumber = "";
+  elements.orderNotes.value = "";
+  elements.cashReceived.value = "";
+  elements.customerNumber.value = "";
+  renderCart();
+  renderOpenOrders();
+};
+
+const resumeOrder = (orderId) => {
+  const order = state.openOrders.find((entry) => entry.id === orderId);
+  if (!order) {
+    return;
+  }
+  state.openOrders = state.openOrders.filter((entry) => entry.id !== orderId);
+  saveOpenOrders(state.openOrders);
+
+  state.cartLines = order.lines.map((line) => ({ ...line }));
+  state.notes = order.notes || "";
+  state.customerNumber = order.customerNumber || "";
+  state.cashReceivedInput = "";
+  state.paymentMethod = "cash";
+  elements.orderNotes.value = state.notes;
+  elements.customerNumber.value = state.customerNumber;
+  elements.cashReceived.value = "";
+  updateCartPricesForMethod();
+  updatePaymentMethodUI();
+  renderCart();
+  renderMenuItems();
+  renderOpenOrders();
+};
+
+const deleteOpenOrder = (orderId) => {
+  const order = state.openOrders.find((entry) => entry.id === orderId);
+  if (!order) {
+    return;
+  }
+  if (!window.confirm("Delete this open order?")) {
+    return;
+  }
+  state.openOrders = state.openOrders.filter((entry) => entry.id !== orderId);
+  saveOpenOrders(state.openOrders);
+  renderOpenOrders();
+};
+
+const renderOpenOrders = () => {
+  clearNode(elements.openOrders);
+  if (state.openOrders.length === 0) {
+    elements.openOrders.appendChild(el("div", "placeholder", "No open orders."));
+    return;
+  }
+
+  state.openOrders.forEach((order) => {
+    const card = el("div", "card");
+    const row = el("div", "row");
+    const title = order.customerNumber ? order.customerNumber : "Walk-in";
+    row.appendChild(el("strong", "", title));
+    const total = calcSubtotal(order.lines);
+    row.appendChild(el("span", "", formatPeso(total)));
+    card.appendChild(row);
+
+    const meta = el("div", "", "");
+    const time = new Date(order.createdAt).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    meta.textContent = `Saved ${time}`;
+    card.appendChild(meta);
+
+    const actions = el("div", "inline-form");
+    const resumeBtn = el("button", "btn btn-primary", "Resume");
+    resumeBtn.type = "button";
+    resumeBtn.addEventListener("click", () => resumeOrder(order.id));
+    const deleteBtn = el("button", "btn btn-danger", "Delete");
+    deleteBtn.type = "button";
+    deleteBtn.addEventListener("click", () => deleteOpenOrder(order.id));
+    actions.appendChild(resumeBtn);
+    actions.appendChild(deleteBtn);
+    card.appendChild(actions);
+
+    elements.openOrders.appendChild(card);
+  });
 };
 
 const renderCart = () => {
@@ -390,15 +764,27 @@ const renderCart = () => {
 
   const subtotal = calcSubtotal(state.cartLines);
   const totalDue = subtotal;
-  const cashReceived = Number(state.cashReceivedInput || 0);
+  const cashReceived = isAutoPaid(state.paymentMethod)
+    ? totalDue
+    : Number(state.cashReceivedInput || 0);
   const change = calcChange(totalDue, cashReceived);
 
   elements.subtotalValue.textContent = formatPeso(subtotal);
   elements.totalDueValue.textContent = formatPeso(totalDue);
   elements.changeValue.textContent = formatPeso(change);
 
-  const canComplete = state.cartLines.length > 0 && cashReceived >= totalDue && totalDue > 0;
+  const canComplete =
+    state.cartLines.length > 0 &&
+    totalDue > 0 &&
+    (isAutoPaid(state.paymentMethod) || cashReceived >= totalDue);
   elements.completeSale.disabled = !canComplete;
+  elements.holdOrder.disabled = state.cartLines.length === 0;
+  elements.cashReceived.disabled = isAutoPaid(state.paymentMethod);
+  elements.cashReceived.value =
+    isAutoPaid(state.paymentMethod) && totalDue > 0
+      ? totalDue.toFixed(2)
+      : state.cashReceivedInput;
+  updatePaymentMethodUI();
 };
 
 const renderHistory = () => {
@@ -453,7 +839,9 @@ const startEditSale = (sale) => {
   state.editingSale = {
     id: sale.id,
     lines: sale.lines.map((line) => ({ ...line })),
-    cashReceived: sale.cashReceived.toString()
+    cashReceived: isAutoPaid(sale.paymentMethod)
+      ? sale.totalDue.toString()
+      : sale.cashReceived.toString()
   };
   renderHistory();
 };
@@ -491,8 +879,35 @@ const saveSaleChanges = (sale) => {
   }
   const subtotal = calcSubtotal(state.editingSale.lines);
   const totalDue = subtotal;
-  const cashReceived = Number(state.editingSale.cashReceived || 0);
+  const cashReceived = isAutoPaid(sale.paymentMethod)
+    ? totalDue
+    : Number(state.editingSale.cashReceived || 0);
   const change = calcChange(totalDue, cashReceived);
+
+  const originalTally = tallyLines(sale.lines);
+  const updatedTally = tallyLines(state.editingSale.lines);
+  const adjustments = new Map();
+  const stockIssues = [];
+  new Set([...originalTally.keys(), ...updatedTally.keys()]).forEach((itemId) => {
+    const originalQty = originalTally.get(itemId) || 0;
+    const updatedQty = updatedTally.get(itemId) || 0;
+    const delta = originalQty - updatedQty;
+    if (delta !== 0) {
+      const item = state.menu.items.find((entry) => entry.id === itemId);
+      if (item && typeof item.stock === "number" && delta < 0) {
+        const needed = Math.abs(delta);
+        if (item.stock < needed) {
+          stockIssues.push(`${item.name} (stock ${item.stock}, need ${needed})`);
+        }
+      }
+      adjustments.set(itemId, delta);
+    }
+  });
+
+  if (stockIssues.length > 0) {
+    window.alert(`Not enough stock for: ${stockIssues.join(", ")}.`);
+    return;
+  }
 
   const updatedSale = {
     ...sale,
@@ -504,6 +919,7 @@ const saveSaleChanges = (sale) => {
   };
 
   updateSale(updatedSale);
+  applyStockAdjustments(adjustments);
   state.editingSale = null;
   renderHistory();
 };
@@ -512,6 +928,11 @@ const removeSale = (sale) => {
   if (!window.confirm("Delete this sale? This cannot be undone.")) {
     return;
   }
+  const adjustments = new Map();
+  sale.lines.forEach((line) => {
+    adjustments.set(line.itemId, (adjustments.get(line.itemId) || 0) + line.qty);
+  });
+  applyStockAdjustments(adjustments);
   deleteSale(sale.id);
   state.selectedSaleId = null;
   state.editingSale = null;
@@ -563,6 +984,16 @@ const renderSaleDetails = (todaySales) => {
       new Date(selectedSale.paidAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     )
   );
+  const customerRow = el("div", "row");
+  customerRow.appendChild(el("span", "", "Customer"));
+  customerRow.appendChild(
+    el("span", "", selectedSale.customerNumber ? selectedSale.customerNumber : "Walk-in")
+  );
+  const paymentRow = el("div", "row");
+  paymentRow.appendChild(el("span", "", "Payment"));
+  paymentRow.appendChild(
+    el("span", "", selectedSale.paymentMethod ? selectedSale.paymentMethod.toUpperCase() : "Cash")
+  );
   const totalRow = el("div", "row");
   totalRow.appendChild(el("span", "", "Total"));
   const totalValue = state.editingSale && state.editingSale.id === selectedSale.id
@@ -570,6 +1001,8 @@ const renderSaleDetails = (todaySales) => {
     : selectedSale.totalDue;
   totalRow.appendChild(el("strong", "", formatPeso(totalValue)));
   infoCard.appendChild(timeRow);
+  infoCard.appendChild(customerRow);
+  infoCard.appendChild(paymentRow);
   infoCard.appendChild(totalRow);
   elements.saleDetails.appendChild(infoCard);
 
@@ -618,18 +1051,25 @@ const renderSaleDetails = (todaySales) => {
 
   const cashCard = el("div", "card");
   const cashRow = el("div", "row");
-  cashRow.appendChild(el("span", "", "Cash Received"));
+  const paymentLabel = isAutoPaid(selectedSale.paymentMethod)
+    ? `${selectedSale.paymentMethod.toUpperCase()} Received`
+    : "Cash Received";
+  cashRow.appendChild(el("span", "", paymentLabel));
   if (state.editingSale && state.editingSale.id === selectedSale.id) {
-    const input = el("input", "", "");
-    input.type = "number";
-    input.min = "0";
-    input.step = "0.01";
-    input.value = state.editingSale.cashReceived;
-    input.addEventListener("input", (event) => {
-      state.editingSale.cashReceived = event.target.value;
-      renderHistory();
-    });
-    cashRow.appendChild(input);
+    if (isAutoPaid(selectedSale.paymentMethod)) {
+      cashRow.appendChild(el("strong", "", formatPeso(totalValue)));
+    } else {
+      const input = el("input", "", "");
+      input.type = "number";
+      input.min = "0";
+      input.step = "0.01";
+      input.value = state.editingSale.cashReceived;
+      input.addEventListener("input", (event) => {
+        state.editingSale.cashReceived = event.target.value;
+        renderHistory();
+      });
+      cashRow.appendChild(input);
+    }
   } else {
     cashRow.appendChild(el("strong", "", formatPeso(selectedSale.cashReceived)));
   }
@@ -638,7 +1078,9 @@ const renderSaleDetails = (todaySales) => {
   const changeRow = el("div", "row");
   changeRow.appendChild(el("span", "", "Change"));
   const cashValue = state.editingSale && state.editingSale.id === selectedSale.id
-    ? Number(state.editingSale.cashReceived || 0)
+    ? isAutoPaid(selectedSale.paymentMethod)
+      ? totalValue
+      : Number(state.editingSale.cashReceived || 0)
     : selectedSale.cashReceived;
   const changeValue = state.editingSale && state.editingSale.id === selectedSale.id
     ? calcChange(calcSubtotal(state.editingSale.lines), cashValue)
@@ -677,6 +1119,8 @@ const resetItemDraft = () => {
     id: null,
     name: "",
     price: "",
+    stock: "",
+    foodpandaPrice: "",
     categoryId: state.menu.categories[0]?.id || "",
     active: true
   };
@@ -686,6 +1130,8 @@ const resetItemDraft = () => {
 const renderItemForm = () => {
   elements.itemName.value = state.itemDraft.name;
   elements.itemPrice.value = state.itemDraft.price;
+  elements.itemStock.value = state.itemDraft.stock;
+  elements.itemFoodpandaPrice.value = state.itemDraft.foodpandaPrice;
   elements.itemActive.checked = state.itemDraft.active;
   elements.saveItem.textContent = state.itemDraft.id ? "Update" : "Add";
 
@@ -727,6 +1173,14 @@ const renderItemsList = () => {
     header.appendChild(el("span", "", formatPeso(item.price)));
     card.appendChild(header);
     card.appendChild(el("div", "", categoriesById.get(item.categoryId) || ""));
+    const stockText =
+      typeof item.stock === "number" ? `Stock: ${item.stock}` : "Stock: not tracked";
+    card.appendChild(el("div", "", stockText));
+    const foodpandaText =
+      typeof item.foodpandaPrice === "number"
+        ? `Foodpanda: ${formatPeso(item.foodpandaPrice)}`
+        : "Foodpanda: not set";
+    card.appendChild(el("div", "", foodpandaText));
 
     const actions = el("div", "inline-form");
     const toggle = el("button", "btn btn-outline", item.active ? "Active" : "Inactive");
@@ -788,6 +1242,8 @@ const startEditItem = (item) => {
     id: item.id,
     name: item.name,
     price: item.price.toString(),
+    stock: typeof item.stock === "number" ? item.stock.toString() : "",
+    foodpandaPrice: typeof item.foodpandaPrice === "number" ? item.foodpandaPrice.toString() : "",
     categoryId: item.categoryId,
     active: item.active
   };
@@ -797,18 +1253,46 @@ const startEditItem = (item) => {
 const saveItem = () => {
   const name = elements.itemName.value.trim();
   const priceValue = Number(elements.itemPrice.value);
+  const stockRaw = elements.itemStock.value;
+  const stockValue =
+    stockRaw === "" ? null : Number.isFinite(Number(stockRaw)) ? Number(stockRaw) : NaN;
+  const foodpandaRaw = elements.itemFoodpandaPrice.value;
+  const foodpandaValue =
+    foodpandaRaw === ""
+      ? null
+      : Number.isFinite(Number(foodpandaRaw))
+        ? Number(foodpandaRaw)
+        : NaN;
   const categoryId = elements.itemCategory.value;
   const active = elements.itemActive.checked;
 
-  if (!name || !categoryId || !Number.isFinite(priceValue)) {
-    window.alert("Fill in item name, price, and category.");
+  if (
+    !name ||
+    !categoryId ||
+    !Number.isFinite(priceValue) ||
+    Number.isNaN(stockValue) ||
+    Number.isNaN(foodpandaValue) ||
+    (typeof stockValue === "number" && stockValue < 0) ||
+    (typeof foodpandaValue === "number" && foodpandaValue < 0)
+  ) {
+    window.alert(
+      "Fill in item name, price, category, and valid stock/foodpanda price (or leave blank)."
+    );
     return;
   }
 
   if (state.itemDraft.id) {
     state.menu.items = state.menu.items.map((item) =>
       item.id === state.itemDraft.id
-        ? { ...item, name, price: priceValue, categoryId, active }
+        ? {
+            ...item,
+            name,
+            price: priceValue,
+            stock: stockValue,
+            foodpandaPrice: foodpandaValue,
+            categoryId,
+            active
+          }
         : item
     );
   } else {
@@ -816,6 +1300,8 @@ const saveItem = () => {
       id: crypto.randomUUID(),
       name,
       price: priceValue,
+      stock: stockValue,
+      foodpandaPrice: foodpandaValue,
       categoryId,
       active
     });
@@ -857,12 +1343,133 @@ const renderMenuEditor = () => {
   renderItemsList();
 };
 
+const renderInventory = () => {
+  if (!elements.inventoryBody) {
+    return;
+  }
+  clearNode(elements.inventoryBody);
+  const todaySales = getTodaySales();
+  const categoriesById = new Map(state.menu.categories.map((category) => [category.id, category.name]));
+  const report = new Map();
+  const todayStamp = new Date().toISOString().slice(0, 10);
+  if (elements.inventoryDate) {
+    elements.inventoryDate.textContent = todayStamp;
+  }
+
+  state.menu.items.forEach((item) => {
+    report.set(item.id, {
+      itemId: item.id,
+      name: item.name,
+      category: categoriesById.get(item.categoryId) || "",
+      price: item.price,
+      stock: item.stock,
+      foodpandaPrice: item.foodpandaPrice,
+      cashQty: 0,
+      cashSales: 0,
+      gcashQty: 0,
+      gcashSales: 0,
+      foodpandaQty: 0,
+      foodpandaSales: 0
+    });
+  });
+
+  todaySales.forEach((sale) => {
+    const method = sale.paymentMethod ? sale.paymentMethod.toUpperCase() : "CASH";
+    sale.lines.forEach((line) => {
+      let entry = report.get(line.itemId);
+      if (!entry) {
+        entry = {
+          itemId: line.itemId,
+          name: line.name,
+          category: "Unlisted",
+          price: line.price,
+          stock: null,
+          foodpandaPrice: null,
+          cashQty: 0,
+          cashSales: 0,
+          gcashQty: 0,
+          gcashSales: 0,
+          foodpandaQty: 0,
+          foodpandaSales: 0
+        };
+        report.set(line.itemId, entry);
+      }
+      const lineTotal = calcLineTotal(line.price, line.qty);
+      if (method === "GCASH") {
+        entry.gcashQty += line.qty;
+        entry.gcashSales += lineTotal;
+      } else if (method === "FOODPANDA") {
+        entry.foodpandaQty += line.qty;
+        entry.foodpandaSales += lineTotal;
+      } else {
+        entry.cashQty += line.qty;
+        entry.cashSales += lineTotal;
+      }
+    });
+  });
+
+  const rows = Array.from(report.values()).sort((a, b) => {
+    const categoryCompare = a.category.localeCompare(b.category);
+    if (categoryCompare !== 0) {
+      return categoryCompare;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  rows.forEach((entry) => {
+    const totalQty = entry.cashQty + entry.gcashQty + entry.foodpandaQty;
+    const totalSales = entry.cashSales + entry.gcashSales + entry.foodpandaSales;
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", "", entry.category));
+    tr.appendChild(el("td", "", entry.name));
+    tr.appendChild(el("td", "", formatPeso(entry.price)));
+
+    const stockCell = document.createElement("td");
+    if (state.menu.items.find((item) => item.id === entry.itemId)) {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.value = typeof entry.stock === "number" ? String(entry.stock) : "";
+      input.placeholder = "—";
+      input.dataset.stock = "true";
+      input.dataset.itemId = entry.itemId;
+      stockCell.appendChild(input);
+    } else {
+      stockCell.textContent = "—";
+    }
+    tr.appendChild(stockCell);
+
+    tr.appendChild(
+      el(
+        "td",
+        "",
+        typeof entry.foodpandaPrice === "number" ? formatPeso(entry.foodpandaPrice) : "—"
+      )
+    );
+    tr.appendChild(el("td", "", String(entry.cashQty)));
+    tr.appendChild(el("td", "", entry.cashSales ? formatPeso(entry.cashSales) : "0"));
+    tr.appendChild(el("td", "", String(entry.gcashQty)));
+    tr.appendChild(el("td", "", entry.gcashSales ? formatPeso(entry.gcashSales) : "0"));
+    tr.appendChild(el("td", "", String(entry.foodpandaQty)));
+    tr.appendChild(
+      el("td", "", entry.foodpandaSales ? formatPeso(entry.foodpandaSales) : "0")
+    );
+    tr.appendChild(el("td", "", String(totalQty)));
+    tr.appendChild(el("td", "", totalSales ? formatPeso(totalSales) : "0"));
+    tr.appendChild(el("td", "", todayStamp));
+    elements.inventoryBody.appendChild(tr);
+  });
+};
+
 const renderAll = () => {
   renderCategories();
   renderMenuItems();
   renderCart();
+  renderOpenOrders();
   renderHistory();
   renderMenuEditor();
+  renderInventory();
 };
 
 const wireEvents = () => {
@@ -870,15 +1477,33 @@ const wireEvents = () => {
     btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
   });
 
+  document.querySelectorAll(".toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.paymentMethod = btn.dataset.method;
+      if (isAutoPaid(state.paymentMethod)) {
+        state.cashReceivedInput = "";
+      }
+      updateCartPricesForMethod();
+      renderCart();
+      renderMenuItems();
+    });
+  });
+
   elements.clearCart.addEventListener("click", clearCart);
   elements.cashReceived.addEventListener("input", (event) => {
-    state.cashReceivedInput = event.target.value;
+    if (state.paymentMethod === "cash") {
+      state.cashReceivedInput = event.target.value;
+    }
     renderCart();
+  });
+  elements.customerNumber.addEventListener("input", (event) => {
+    state.customerNumber = event.target.value;
   });
   elements.orderNotes.addEventListener("input", (event) => {
     state.notes = event.target.value;
   });
   elements.completeSale.addEventListener("click", completeSale);
+  elements.holdOrder.addEventListener("click", holdOrder);
 
   elements.exportCsv.addEventListener("click", exportCsv);
 
@@ -892,6 +1517,49 @@ const wireEvents = () => {
   elements.itemActive.addEventListener("change", (event) => {
     state.itemDraft.active = event.target.checked;
   });
+
+  if (elements.inventoryBody) {
+    elements.inventoryBody.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      if (!target.dataset.stock || !target.dataset.itemId) {
+        return;
+      }
+      const item = state.menu.items.find((entry) => entry.id === target.dataset.itemId);
+      if (!item) {
+        return;
+      }
+      const value = target.value.trim();
+      if (value === "") {
+        item.stock = null;
+      } else {
+        const nextStock = Number(value);
+        if (!Number.isFinite(nextStock) || nextStock < 0) {
+          window.alert("Stock must be a non-negative number.");
+          target.value = typeof item.stock === "number" ? String(item.stock) : "";
+          return;
+        }
+        item.stock = nextStock;
+      }
+      saveMenu(state.menu);
+      renderMenuItems();
+      renderMenuEditor();
+      renderInventory();
+    });
+  }
+
+  if (elements.inventoryFile && elements.importInventory) {
+    elements.importInventory.addEventListener("click", () => {
+      const file = elements.inventoryFile.files?.[0];
+      if (!file) {
+        window.alert("Choose an XLSX file first.");
+        return;
+      }
+      importInventoryXlsx(file);
+    });
+  }
 };
 
 const exportCsv = () => {
@@ -900,26 +1568,97 @@ const exportCsv = () => {
     return;
   }
 
-  const rows = [["Sale ID", "Time", "Item", "Qty", "Price", "Line Total", "Sale Total"]];
+  const itemTotals = new Map();
+  let grossTotal = 0;
+  let cashTotal = 0;
+  let gcashTotal = 0;
+  let foodpandaTotal = 0;
+  let itemsSold = 0;
+  const detailRows = [];
 
   todaySales.forEach((sale) => {
     const time = new Date(sale.paidAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const customer = sale.customerNumber ? sale.customerNumber : "Walk-in";
+    const payment = sale.paymentMethod ? sale.paymentMethod.toUpperCase() : "CASH";
+    const saleTotal = sale.totalDue || 0;
+    grossTotal += saleTotal;
+    if (payment === "GCASH") {
+      gcashTotal += saleTotal;
+    } else if (payment === "FOODPANDA") {
+      foodpandaTotal += saleTotal;
+    } else {
+      cashTotal += saleTotal;
+    }
     if (sale.lines.length === 0) {
-      rows.push([sale.id, time, "", "", "", "", sale.totalDue.toFixed(2)]);
+      detailRows.push([sale.id, time, customer, payment, "", "", "", "", saleTotal.toFixed(2)]);
       return;
     }
     sale.lines.forEach((line) => {
-      rows.push([
+      itemsSold += line.qty;
+      const current = itemTotals.get(line.name) || { qty: 0, total: 0 };
+      current.qty += line.qty;
+      current.total += calcLineTotal(line.price, line.qty);
+      itemTotals.set(line.name, current);
+      detailRows.push([
         sale.id,
         time,
+        customer,
+        payment,
         line.name,
         String(line.qty),
         line.price.toFixed(2),
         calcLineTotal(line.price, line.qty).toFixed(2),
-        sale.totalDue.toFixed(2)
+        saleTotal.toFixed(2)
       ]);
     });
   });
+
+  const averageTicket = todaySales.length > 0 ? grossTotal / todaySales.length : 0;
+  const foodpandaCommission = foodpandaTotal * 0.3;
+  const foodpandaVat = foodpandaCommission * 0.12;
+  const foodpandaNet = foodpandaTotal - foodpandaCommission - foodpandaVat;
+  const rows = [
+    ["DAILY SALES SUMMARY"],
+    ["Sales Count", String(todaySales.length)],
+    ["Gross Total", grossTotal.toFixed(2)],
+    ["Items Sold", String(itemsSold)],
+    ["Average Ticket", averageTicket.toFixed(2)],
+    [],
+    ["PAYMENT TOTALS"],
+    ["Cash", cashTotal.toFixed(2)],
+    ["GCash", gcashTotal.toFixed(2)],
+    ["Foodpanda", foodpandaTotal.toFixed(2)],
+    [],
+    ["FOODPANDA BREAKDOWN"],
+    ["Foodpanda Total", foodpandaTotal.toFixed(2)],
+    ["Commission (30%)", foodpandaCommission.toFixed(2)],
+    ["VAT on Commission (12%)", foodpandaVat.toFixed(2)],
+    ["Net (after commission + VAT)", foodpandaNet.toFixed(2)],
+    [],
+    ["ITEM SUMMARY"],
+    ["Item", "Qty Sold", "Sales Total"]
+  ];
+
+  Array.from(itemTotals.entries())
+    .sort((a, b) => b[1].total - a[1].total)
+    .forEach(([name, data]) => {
+      rows.push([name, String(data.qty), data.total.toFixed(2)]);
+    });
+
+  rows.push([]);
+  rows.push(["SALES DETAIL"]);
+  rows.push([
+    "Sale ID",
+    "Time",
+    "Customer",
+    "Payment",
+    "Item",
+    "Qty",
+    "Price",
+    "Line Total",
+    "Sale Total"
+  ]);
+  detailRows.forEach((row) => rows.push(row));
 
   const escapeCsv = (value) => {
     if (/[",\n]/.test(value)) {
@@ -947,12 +1686,15 @@ const init = () => {
   elements.menuItems = document.getElementById("menu-items");
   elements.cartLines = document.getElementById("cart-lines");
   elements.clearCart = document.getElementById("clear-cart");
+  elements.customerNumber = document.getElementById("customer-number");
   elements.orderNotes = document.getElementById("order-notes");
   elements.subtotalValue = document.getElementById("subtotal-value");
   elements.totalDueValue = document.getElementById("total-due-value");
   elements.cashReceived = document.getElementById("cash-received");
   elements.changeValue = document.getElementById("change-value");
   elements.completeSale = document.getElementById("complete-sale");
+  elements.holdOrder = document.getElementById("hold-order");
+  elements.openOrders = document.getElementById("open-orders");
   elements.exportCsv = document.getElementById("export-csv");
   elements.todayCount = document.getElementById("today-count");
   elements.todayGross = document.getElementById("today-gross");
@@ -965,14 +1707,21 @@ const init = () => {
   elements.resetMenu = document.getElementById("reset-menu");
   elements.itemName = document.getElementById("item-name");
   elements.itemPrice = document.getElementById("item-price");
+  elements.itemStock = document.getElementById("item-stock");
+  elements.itemFoodpandaPrice = document.getElementById("item-foodpanda-price");
   elements.itemCategory = document.getElementById("item-category");
   elements.itemActive = document.getElementById("item-active");
   elements.saveItem = document.getElementById("save-item");
   elements.cancelItem = document.getElementById("cancel-item");
   elements.itemsList = document.getElementById("items-list");
+  elements.inventoryBody = document.getElementById("inventory-body");
+  elements.inventoryDate = document.getElementById("inventory-date");
+  elements.inventoryFile = document.getElementById("inventory-file");
+  elements.importInventory = document.getElementById("import-inventory");
 
   state.menu = loadMenu();
   state.sales = loadSales();
+  state.openOrders = loadOpenOrders();
   state.selectedCategoryId = state.menu.categories[0]?.id || "";
   state.itemDraft.categoryId = state.menu.categories[0]?.id || "";
 

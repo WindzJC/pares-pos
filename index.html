@@ -16,6 +16,7 @@
         <button class="tab-btn active" data-tab="cashier" type="button">Cashier</button>
         <button class="tab-btn" data-tab="history" type="button">History</button>
         <button class="tab-btn" data-tab="menu" type="button">Menu</button>
+        <button class="tab-btn" data-tab="inventory" type="button">Inventory</button>
       </nav>
     </header>
 
@@ -45,6 +46,11 @@
             <div id="cart-lines" class="stack"></div>
 
             <label class="field">
+              <span>Customer # / Table</span>
+              <input id="customer-number" type="text" placeholder="e.g. Table 3 or #42" />
+            </label>
+
+            <label class="field">
               <span>Order Notes (optional)</span>
               <textarea id="order-notes" rows="2" placeholder="Add notes"></textarea>
             </label>
@@ -61,6 +67,14 @@
             </div>
 
             <div class="payment">
+              <div class="payment-method">
+                <span>Payment Method</span>
+                <div class="toggle-group">
+                  <button class="toggle-btn active" data-method="cash" type="button">Cash</button>
+                  <button class="toggle-btn" data-method="gcash" type="button">GCash</button>
+                  <button class="toggle-btn" data-method="foodpanda" type="button">Foodpanda</button>
+                </div>
+              </div>
               <label class="field">
                 <span>Cash Received</span>
                 <input id="cash-received" type="number" inputmode="decimal" min="0" step="0.01" />
@@ -69,10 +83,17 @@
                 <span>Change</span>
                 <strong id="change-value">₱0.00</strong>
               </div>
-              <button id="complete-sale" class="btn btn-primary" type="button">
-                Complete Sale
-              </button>
+              <div class="payment-actions">
+                <button id="hold-order" class="btn btn-outline" type="button">Hold Order</button>
+                <button id="complete-sale" class="btn btn-primary" type="button">Complete Sale</button>
+              </div>
             </div>
+
+            <div class="panel-subhead">
+              <h3>Open Orders</h3>
+              <p>Unpaid orders waiting for payment.</p>
+            </div>
+            <div id="open-orders" class="stack"></div>
           </div>
         </div>
       </section>
@@ -145,6 +166,8 @@
           <div class="item-form">
             <input id="item-name" type="text" placeholder="Item name" />
             <input id="item-price" type="number" min="0" step="0.01" placeholder="Price" />
+            <input id="item-stock" type="number" min="0" step="1" placeholder="Stock (blank = ignore)" />
+            <input id="item-foodpanda-price" type="number" min="0" step="0.01" placeholder="Foodpanda price (optional)" />
             <select id="item-category"></select>
             <label class="checkbox">
               <input id="item-active" type="checkbox" checked />
@@ -159,8 +182,49 @@
           <div id="items-list" class="stack"></div>
         </div>
       </section>
+
+      <section id="page-inventory" class="page">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Inventory</p>
+              <h2>Daily Sales & Stock</h2>
+            </div>
+            <div id="inventory-date" class="badge"></div>
+          </div>
+          <div class="inline-form">
+            <input id="inventory-file" type="file" accept=".xlsx" />
+            <button id="import-inventory" class="btn btn-primary" type="button">Import XLSX</button>
+            <span class="helper-text">Uses columns like Category, Item, Price, Stock, Foodpanda Price.</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Item</th>
+                  <th>Price</th>
+                  <th>Stock</th>
+                  <th>Foodpanda Price</th>
+                  <th>Cash Qty</th>
+                  <th>Cash Sales</th>
+                  <th>GCash Qty</th>
+                  <th>GCash Sales</th>
+                  <th>Foodpanda Qty</th>
+                  <th>Foodpanda Sales</th>
+                  <th>Total Qty</th>
+                  <th>Total Sales</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="./script.js"></script>
   </body>
 </html>
