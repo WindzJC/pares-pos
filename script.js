@@ -6,7 +6,7 @@ const SYNC_QUEUE_KEY = "pos_sync_queue";
 const SYNC_STATE_KEY = "pos_sync_state";
 const SYNC_CONFIG = {
   // Paste the Apps Script Web App URL here to enable sync.
-  endpoint: "",
+  endpoint: "https://script.google.com/macros/s/AKfycbxi5Z_s8k3taRzZbB7oSlUECa3ecTQOV-SjMn5wv5wEOm6EVVruXxoTANejowEU_EaGKg/exec",
   // Optional: set the same secret in apps-script.gs for basic protection.
   secret: ""
 };
