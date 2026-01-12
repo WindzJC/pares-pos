@@ -473,10 +473,12 @@ const flushSyncQueue = async () => {
     try {
       const response = await fetch(SYNC_CONFIG.endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        // Apps Script web apps do not send CORS headers; no-cors avoids preflight issues.
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify(payload)
       });
-      if (!response.ok) {
+      if (response.type !== "opaque" && !response.ok) {
         throw new Error(`Sync failed: ${response.status}`);
       }
       queue.shift();
