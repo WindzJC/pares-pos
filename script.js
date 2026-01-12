@@ -1,11 +1,21 @@
 const MENU_KEY = "pos_menu";
 const SALES_KEY = "pos_sales";
 const OPEN_ORDERS_KEY = "pos_open_orders";
+const EXPENSES_KEY = "pos_expenses";
+const SYNC_QUEUE_KEY = "pos_sync_queue";
+const SYNC_STATE_KEY = "pos_sync_state";
+const SYNC_CONFIG = {
+  // Paste the Apps Script Web App URL here to enable sync.
+  endpoint: "",
+  // Optional: set the same secret in apps-script.gs for basic protection.
+  secret: ""
+};
 
 const state = {
   menu: null,
   sales: [],
   openOrders: [],
+  expenses: [],
   selectedCategoryId: "",
   cartLines: [],
   cashReceivedInput: "",
@@ -14,6 +24,7 @@ const state = {
   notes: "",
   selectedSaleId: null,
   editingSale: null,
+  syncing: false,
   itemDraft: {
     id: null,
     name: "",
@@ -36,6 +47,17 @@ const calcSubtotal = (lines) =>
   lines.reduce((sum, line) => addMoney(sum, calcLineTotal(line.price, line.qty)), 0);
 const calcChange = (totalDue, cashReceived) =>
   cashReceived < totalDue ? 0 : fromCents(toCents(cashReceived) - toCents(totalDue));
+const getLocalDateStamp = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+const getLocalTimeStamp = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
 
 const pesoFormatter = new Intl.NumberFormat("en-PH", {
   style: "currency",
@@ -337,6 +359,18 @@ const writeJSON = (key, value) => {
   localStorage.setItem(key, JSON.stringify(value));
 };
 
+const loadSyncQueue = () => readJSON(SYNC_QUEUE_KEY, []);
+
+const saveSyncQueue = (queue) => {
+  writeJSON(SYNC_QUEUE_KEY, queue);
+};
+
+const loadSyncState = () => readJSON(SYNC_STATE_KEY, { inventoryQueuedDate: "" });
+
+const saveSyncState = (stateValue) => {
+  writeJSON(SYNC_STATE_KEY, stateValue);
+};
+
 const loadMenu = () => {
   const menu = readJSON(MENU_KEY, null);
   if (!menu) {
@@ -395,6 +429,12 @@ const saveOpenOrders = (orders) => {
   writeJSON(OPEN_ORDERS_KEY, orders);
 };
 
+const loadExpenses = () => readJSON(EXPENSES_KEY, []);
+
+const saveExpenses = (expenses) => {
+  writeJSON(EXPENSES_KEY, expenses);
+};
+
 const getTodaySales = () => {
   const today = new Date();
   return state.sales.filter((sale) => {
@@ -407,6 +447,179 @@ const getTodaySales = () => {
   });
 };
 
+const isSyncEnabled = () => Boolean(SYNC_CONFIG.endpoint);
+
+const buildSyncPayload = (type, data) => {
+  const payload = {
+    type,
+    data,
+    sentAt: new Date().toISOString(),
+    source: "pares-pos"
+  };
+  if (SYNC_CONFIG.secret) {
+    payload.secret = SYNC_CONFIG.secret;
+  }
+  return payload;
+};
+
+const flushSyncQueue = async () => {
+  if (!isSyncEnabled() || state.syncing || !navigator.onLine) {
+    return;
+  }
+  state.syncing = true;
+  let queue = loadSyncQueue();
+  while (queue.length > 0) {
+    const payload = queue[0];
+    try {
+      const response = await fetch(SYNC_CONFIG.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        throw new Error(`Sync failed: ${response.status}`);
+      }
+      queue.shift();
+      saveSyncQueue(queue);
+    } catch {
+      break;
+    }
+  }
+  state.syncing = false;
+};
+
+const enqueueSync = (payload) => {
+  if (!isSyncEnabled()) {
+    return;
+  }
+  const queue = loadSyncQueue();
+  queue.push(payload);
+  saveSyncQueue(queue);
+  flushSyncQueue();
+};
+
+const queueSaleSync = (sale, mode = "sale") => {
+  enqueueSync(
+    buildSyncPayload("sale", {
+      mode,
+      sale: {
+        ...sale,
+        localDate: getLocalDateStamp(sale.paidAt),
+        localTime: getLocalTimeStamp(sale.paidAt)
+      }
+    })
+  );
+};
+
+const queueExpenseSync = (expense) => {
+  enqueueSync(
+    buildSyncPayload("expense", {
+      ...expense,
+      localTime: getLocalTimeStamp(expense.createdAt)
+    })
+  );
+};
+
+const buildInventoryReport = () => {
+  if (!state.menu) {
+    return { rows: [], dateStamp: getLocalDateStamp() };
+  }
+  const todaySales = getTodaySales();
+  const categoriesById = new Map(state.menu.categories.map((category) => [category.id, category.name]));
+  const report = new Map();
+  const dateStamp = getLocalDateStamp();
+
+  state.menu.items.forEach((item) => {
+    report.set(item.id, {
+      itemId: item.id,
+      name: item.name,
+      category: categoriesById.get(item.categoryId) || "",
+      price: item.price,
+      stock: item.stock,
+      foodpandaPrice: item.foodpandaPrice,
+      cashQty: 0,
+      cashSales: 0,
+      gcashQty: 0,
+      gcashSales: 0,
+      foodpandaQty: 0,
+      foodpandaSales: 0
+    });
+  });
+
+  todaySales.forEach((sale) => {
+    const method = sale.paymentMethod ? sale.paymentMethod.toUpperCase() : "CASH";
+    sale.lines.forEach((line) => {
+      let entry = report.get(line.itemId);
+      if (!entry) {
+        entry = {
+          itemId: line.itemId,
+          name: line.name,
+          category: "Unlisted",
+          price: line.price,
+          stock: null,
+          foodpandaPrice: null,
+          cashQty: 0,
+          cashSales: 0,
+          gcashQty: 0,
+          gcashSales: 0,
+          foodpandaQty: 0,
+          foodpandaSales: 0
+        };
+        report.set(line.itemId, entry);
+      }
+      const lineTotal = calcLineTotal(line.price, line.qty);
+      if (method === "GCASH") {
+        entry.gcashQty += line.qty;
+        entry.gcashSales += lineTotal;
+      } else if (method === "FOODPANDA") {
+        entry.foodpandaQty += line.qty;
+        entry.foodpandaSales += lineTotal;
+      } else {
+        entry.cashQty += line.qty;
+        entry.cashSales += lineTotal;
+      }
+    });
+  });
+
+  const rows = Array.from(report.values())
+    .map((entry) => {
+      const totalQty = entry.cashQty + entry.gcashQty + entry.foodpandaQty;
+      const totalSales = entry.cashSales + entry.gcashSales + entry.foodpandaSales;
+      return { ...entry, totalQty, totalSales, date: dateStamp };
+    })
+    .sort((a, b) => {
+      const categoryCompare = a.category.localeCompare(b.category);
+      if (categoryCompare !== 0) {
+        return categoryCompare;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+  return { rows, dateStamp };
+};
+
+const maybeQueueInventorySnapshot = () => {
+  if (!isSyncEnabled()) {
+    return;
+  }
+  const syncState = loadSyncState();
+  const todayStamp = getLocalDateStamp();
+  if (syncState.inventoryQueuedDate === todayStamp) {
+    return;
+  }
+  const report = buildInventoryReport();
+  if (report.rows.length === 0) {
+    return;
+  }
+  enqueueSync(
+    buildSyncPayload("inventory_snapshot", {
+      date: todayStamp,
+      rows: report.rows
+    })
+  );
+  saveSyncState({ ...syncState, inventoryQueuedDate: todayStamp });
+};
+
 const setActiveTab = (tabId) => {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tabId);
@@ -414,6 +627,12 @@ const setActiveTab = (tabId) => {
   document.querySelectorAll(".page").forEach((page) => {
     page.classList.toggle("active", page.id === `page-${tabId}`);
   });
+  if (tabId === "inventory") {
+    maybeQueueInventorySnapshot();
+  }
+  if (tabId === "expenses") {
+    renderExpenses();
+  }
 };
 
 const renderCategories = () => {
@@ -586,6 +805,7 @@ const completeSale = () => {
   };
 
   addSale(sale);
+  queueSaleSync(sale, "sale");
   const adjustments = new Map();
   state.cartLines.forEach((line) => {
     adjustments.set(line.itemId, (adjustments.get(line.itemId) || 0) - line.qty);
@@ -920,6 +1140,8 @@ const saveSaleChanges = (sale) => {
 
   updateSale(updatedSale);
   applyStockAdjustments(adjustments);
+  queueSaleSync(sale, "void");
+  queueSaleSync(updatedSale, "sale");
   state.editingSale = null;
   renderHistory();
 };
@@ -934,6 +1156,7 @@ const removeSale = (sale) => {
   });
   applyStockAdjustments(adjustments);
   deleteSale(sale.id);
+  queueSaleSync(sale, "void");
   state.selectedSaleId = null;
   state.editingSale = null;
   renderHistory();
@@ -1089,6 +1312,97 @@ const renderSaleDetails = (todaySales) => {
   cashCard.appendChild(changeRow);
 
   elements.saleDetails.appendChild(cashCard);
+};
+
+const getExpensesForDate = (dateStamp) =>
+  state.expenses.filter((expense) => expense.date === dateStamp);
+
+const addExpense = () => {
+  const amountValue = Number(elements.expenseAmount.value);
+  const category = elements.expenseCategory.value.trim();
+  const notes = elements.expenseNotes.value.trim();
+  const dateValue = elements.expenseDate?.value || getLocalDateStamp();
+
+  if (!Number.isFinite(amountValue) || amountValue <= 0 || !category) {
+    window.alert("Enter a valid amount and category.");
+    return;
+  }
+
+  const expense = {
+    id: crypto.randomUUID(),
+    date: dateValue,
+    amount: amountValue,
+    category,
+    notes,
+    createdAt: new Date().toISOString()
+  };
+
+  state.expenses = [...state.expenses, expense];
+  saveExpenses(state.expenses);
+  queueExpenseSync(expense);
+
+  elements.expenseAmount.value = "";
+  elements.expenseCategory.value = "";
+  elements.expenseNotes.value = "";
+  renderExpenses();
+};
+
+const deleteExpense = (expenseId) => {
+  const expense = state.expenses.find((entry) => entry.id === expenseId);
+  if (!expense) {
+    return;
+  }
+  if (!window.confirm("Delete this expense?")) {
+    return;
+  }
+  state.expenses = state.expenses.filter((entry) => entry.id !== expenseId);
+  saveExpenses(state.expenses);
+  renderExpenses();
+};
+
+const renderExpenses = () => {
+  if (!elements.expenseList) {
+    return;
+  }
+  const dateStamp = elements.expenseDate?.value || getLocalDateStamp();
+  const expenses = getExpensesForDate(dateStamp).sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+  );
+  const total = expenses.reduce((sum, expense) => addMoney(sum, expense.amount), 0);
+
+  elements.expenseCount.textContent = String(expenses.length);
+  elements.expenseTotal.textContent = formatPeso(total);
+
+  clearNode(elements.expenseList);
+
+  if (expenses.length === 0) {
+    elements.expenseList.appendChild(el("div", "placeholder", "No expenses yet."));
+    return;
+  }
+
+  expenses.forEach((expense) => {
+    const card = el("div", "card");
+    const row = el("div", "row");
+    row.appendChild(el("strong", "", expense.category));
+    row.appendChild(el("span", "", formatPeso(expense.amount)));
+    card.appendChild(row);
+
+    const meta = el(
+      "div",
+      "",
+      `${getLocalTimeStamp(expense.createdAt)} • ${expense.notes || "No notes"}`
+    );
+    card.appendChild(meta);
+
+    const actions = el("div", "inline-form");
+    const remove = el("button", "btn btn-danger", "Delete");
+    remove.type = "button";
+    remove.addEventListener("click", () => deleteExpense(expense.id));
+    actions.appendChild(remove);
+    card.appendChild(actions);
+
+    elements.expenseList.appendChild(card);
+  });
 };
 
 const renderCategoriesEditor = () => {
@@ -1348,77 +1662,12 @@ const renderInventory = () => {
     return;
   }
   clearNode(elements.inventoryBody);
-  const todaySales = getTodaySales();
-  const categoriesById = new Map(state.menu.categories.map((category) => [category.id, category.name]));
-  const report = new Map();
-  const todayStamp = new Date().toISOString().slice(0, 10);
+  const report = buildInventoryReport();
   if (elements.inventoryDate) {
-    elements.inventoryDate.textContent = todayStamp;
+    elements.inventoryDate.textContent = report.dateStamp;
   }
 
-  state.menu.items.forEach((item) => {
-    report.set(item.id, {
-      itemId: item.id,
-      name: item.name,
-      category: categoriesById.get(item.categoryId) || "",
-      price: item.price,
-      stock: item.stock,
-      foodpandaPrice: item.foodpandaPrice,
-      cashQty: 0,
-      cashSales: 0,
-      gcashQty: 0,
-      gcashSales: 0,
-      foodpandaQty: 0,
-      foodpandaSales: 0
-    });
-  });
-
-  todaySales.forEach((sale) => {
-    const method = sale.paymentMethod ? sale.paymentMethod.toUpperCase() : "CASH";
-    sale.lines.forEach((line) => {
-      let entry = report.get(line.itemId);
-      if (!entry) {
-        entry = {
-          itemId: line.itemId,
-          name: line.name,
-          category: "Unlisted",
-          price: line.price,
-          stock: null,
-          foodpandaPrice: null,
-          cashQty: 0,
-          cashSales: 0,
-          gcashQty: 0,
-          gcashSales: 0,
-          foodpandaQty: 0,
-          foodpandaSales: 0
-        };
-        report.set(line.itemId, entry);
-      }
-      const lineTotal = calcLineTotal(line.price, line.qty);
-      if (method === "GCASH") {
-        entry.gcashQty += line.qty;
-        entry.gcashSales += lineTotal;
-      } else if (method === "FOODPANDA") {
-        entry.foodpandaQty += line.qty;
-        entry.foodpandaSales += lineTotal;
-      } else {
-        entry.cashQty += line.qty;
-        entry.cashSales += lineTotal;
-      }
-    });
-  });
-
-  const rows = Array.from(report.values()).sort((a, b) => {
-    const categoryCompare = a.category.localeCompare(b.category);
-    if (categoryCompare !== 0) {
-      return categoryCompare;
-    }
-    return a.name.localeCompare(b.name);
-  });
-
-  rows.forEach((entry) => {
-    const totalQty = entry.cashQty + entry.gcashQty + entry.foodpandaQty;
-    const totalSales = entry.cashSales + entry.gcashSales + entry.foodpandaSales;
+  report.rows.forEach((entry) => {
     const tr = document.createElement("tr");
     tr.appendChild(el("td", "", entry.category));
     tr.appendChild(el("td", "", entry.name));
@@ -1455,9 +1704,9 @@ const renderInventory = () => {
     tr.appendChild(
       el("td", "", entry.foodpandaSales ? formatPeso(entry.foodpandaSales) : "0")
     );
-    tr.appendChild(el("td", "", String(totalQty)));
-    tr.appendChild(el("td", "", totalSales ? formatPeso(totalSales) : "0"));
-    tr.appendChild(el("td", "", todayStamp));
+    tr.appendChild(el("td", "", String(entry.totalQty)));
+    tr.appendChild(el("td", "", entry.totalSales ? formatPeso(entry.totalSales) : "0"));
+    tr.appendChild(el("td", "", entry.date));
     elements.inventoryBody.appendChild(tr);
   });
 };
@@ -1470,6 +1719,7 @@ const renderAll = () => {
   renderHistory();
   renderMenuEditor();
   renderInventory();
+  renderExpenses();
 };
 
 const wireEvents = () => {
@@ -1559,6 +1809,13 @@ const wireEvents = () => {
       }
       importInventoryXlsx(file);
     });
+  }
+
+  if (elements.addExpense) {
+    elements.addExpense.addEventListener("click", addExpense);
+  }
+  if (elements.expenseDate) {
+    elements.expenseDate.addEventListener("change", renderExpenses);
   }
 };
 
@@ -1718,15 +1975,31 @@ const init = () => {
   elements.inventoryDate = document.getElementById("inventory-date");
   elements.inventoryFile = document.getElementById("inventory-file");
   elements.importInventory = document.getElementById("import-inventory");
+  elements.expenseDate = document.getElementById("expense-date");
+  elements.expenseAmount = document.getElementById("expense-amount");
+  elements.expenseCategory = document.getElementById("expense-category");
+  elements.expenseNotes = document.getElementById("expense-notes");
+  elements.addExpense = document.getElementById("add-expense");
+  elements.expenseList = document.getElementById("expense-list");
+  elements.expenseCount = document.getElementById("expense-count");
+  elements.expenseTotal = document.getElementById("expense-total");
 
   state.menu = loadMenu();
   state.sales = loadSales();
   state.openOrders = loadOpenOrders();
+  state.expenses = loadExpenses();
   state.selectedCategoryId = state.menu.categories[0]?.id || "";
   state.itemDraft.categoryId = state.menu.categories[0]?.id || "";
 
+  if (elements.expenseDate) {
+    elements.expenseDate.value = getLocalDateStamp();
+  }
+
   wireEvents();
   renderAll();
+  maybeQueueInventorySnapshot();
+  flushSyncQueue();
+  window.addEventListener("online", flushSyncQueue);
 };
 
 document.addEventListener("DOMContentLoaded", init);

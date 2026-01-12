@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f1e8" />
     <title>Pares POS</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -12,12 +13,15 @@
         <h1>Pares POS</h1>
         <p>Offline single device</p>
       </div>
-      <nav class="nav-tabs">
-        <button class="tab-btn active" data-tab="cashier" type="button">Cashier</button>
-        <button class="tab-btn" data-tab="history" type="button">History</button>
-        <button class="tab-btn" data-tab="menu" type="button">Menu</button>
-        <button class="tab-btn" data-tab="inventory" type="button">Inventory</button>
-      </nav>
+      <div class="topbar-actions">
+        <nav class="nav-tabs" aria-label="Primary">
+          <button class="tab-btn active" data-tab="cashier" type="button">Cashier</button>
+          <button class="tab-btn" data-tab="history" type="button">History</button>
+          <button class="tab-btn" data-tab="menu" type="button">Menu</button>
+          <button class="tab-btn" data-tab="inventory" type="button">Inventory</button>
+          <button class="tab-btn" data-tab="expenses" type="button">Expenses</button>
+        </nav>
+      </div>
     </header>
 
     <main class="container">
@@ -219,6 +223,62 @@
               </thead>
               <tbody id="inventory-body"></tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-expenses" class="page">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Daily Costs</p>
+                <h2>Expenses</h2>
+              </div>
+            </div>
+
+            <div class="summary">
+              <div class="row">
+                <span>Entries</span>
+                <strong id="expense-count">0</strong>
+              </div>
+              <div class="row">
+                <span>Total</span>
+                <strong id="expense-total">₱0.00</strong>
+              </div>
+            </div>
+
+            <div class="expense-form">
+              <label class="field">
+                <span>Date</span>
+                <input id="expense-date" type="date" />
+              </label>
+              <label class="field">
+                <span>Amount</span>
+                <input id="expense-amount" type="number" min="0" step="0.01" />
+              </label>
+              <label class="field">
+                <span>Category</span>
+                <input id="expense-category" type="text" placeholder="e.g. meat, utilities" />
+              </label>
+              <label class="field">
+                <span>Notes</span>
+                <textarea id="expense-notes" rows="2" placeholder="Optional details"></textarea>
+              </label>
+              <div class="payment-actions">
+                <button id="add-expense" class="btn btn-primary" type="button">Add Expense</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Recent</p>
+                <h2>Expense Log</h2>
+              </div>
+            </div>
+            <div id="expense-list" class="stack"></div>
           </div>
         </div>
       </section>
